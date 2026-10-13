@@ -109,7 +109,7 @@ public struct JavaScriptUnownedValue: ~Copyable {
   /// Returns the value as a string, or asserts if not a string.
   public func getString() -> String {
     assert(isString(), "Value is not a string")
-    return String(jsiString: pointer.pointee.getString(runtime), in: runtime)
+    return String(jsiStringValue: pointer.pointee, in: runtime)
   }
 
   /// Returns the value as a ``JavaScriptObject`` *without* materializing an owning ``JavaScriptValue``
@@ -188,5 +188,14 @@ public struct JavaScriptUnownedValue: ~Copyable {
       throw JavaScriptValue.TypeError(type: JavaScriptObject.self)
     }
     return getObject(in: runtime)
+  }
+
+  /// Returns the value as a ``JavaScriptArray``, or throws `TypeError` if it is not an array. The
+  /// zero-copy counterpart of ``JavaScriptValue/asArray()``; see ``getArray(in:)``.
+  public func asArray(in runtime: JavaScriptRuntime) throws(JavaScriptValue.TypeError) -> JavaScriptArray {
+    guard isArray() else {
+      throw JavaScriptValue.TypeError(type: JavaScriptArray.self)
+    }
+    return getArray(in: runtime)
   }
 }

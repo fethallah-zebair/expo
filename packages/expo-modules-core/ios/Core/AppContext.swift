@@ -92,7 +92,7 @@ public class AppContext: NSObject, EXAppContextProtocol, @unchecked Sendable {
 
   public typealias UIRuntimeFactory = (
     _ appContext: AppContext,
-    _ pointerValue: JavaScriptValue,
+    _ pointerValue: borrowing JavaScriptValue,
     _ runtime: JavaScriptRuntime
   ) throws -> JavaScriptRuntime
 
@@ -495,6 +495,9 @@ public class AppContext: NSObject, EXAppContextProtocol, @unchecked Sendable {
 
     try coreModuleHolder.definition.decorate(object: coreObject, appContext: self)
 
+    // Bind the `@JS` members of the core module, such as `installOnUIRuntime`.
+    try coreModule._decorateModule(object: coreObject, in: runtime)
+
     // Install `global.expo.EventEmitter`.
     installer.installEventEmitterClass()
 
@@ -561,8 +564,8 @@ public class AppContext: NSObject, EXAppContextProtocol, @unchecked Sendable {
     let sharedObjectClass = try coreObject.getPropertyAsObject("SharedObject")
     let sharedObjectBaseProto = sharedObjectClass.getProperty("prototype")
 
-    // Stored as JavaScriptValue (a class) because JavaScriptObject is ~Copyable
-    // and cannot be a Dictionary value.
+    // Prototypes are cached behind `JavaScriptRef` because `JavaScriptObject` is ~Copyable and
+    // cannot be a Dictionary value.
     let prototypeCache = WorkletPrototypeCache()
 
     // Called by the worklet serializer's `unpack` to recreate a SharedObject proxy.
@@ -580,8 +583,10 @@ public class AppContext: NSObject, EXAppContextProtocol, @unchecked Sendable {
       let typeId = ObjectIdentifier(type(of: nativeObject))
       let instance: JavaScriptObject
 
-      if let cachedPrototype = prototypeCache.store[typeId] {
-        instance = runtime.createObject(prototype: cachedPrototype.getObject())
+      if let cachedInstance = prototypeCache.store[typeId]?.withUnwrappedValue({ (prototype: borrowing JavaScriptObject) in
+        runtime.createObject(prototype: prototype)
+      }) {
+        instance = cachedInstance
       } else {
         guard let classDefinition = self.findClassDefinition(for: typeId) else {
           throw SharedObjectClassNotRegisteredException(String(describing: type(of: nativeObject)))
@@ -591,8 +596,8 @@ public class AppContext: NSObject, EXAppContextProtocol, @unchecked Sendable {
           appContext: self,
           basePrototype: sharedObjectBaseProto.getObject()
         )
-        prototypeCache.store[typeId] = built.asValue()
         instance = runtime.createObject(prototype: built)
+        prototypeCache.store[typeId] = built.ref()
       }
 
       instance.defineProperty(sharedObjectIdPropertyName, value: objectId, options: [])
@@ -640,9 +645,7 @@ public class AppContext: NSObject, EXAppContextProtocol, @unchecked Sendable {
   public static func from(runtime: borrowing JavaScriptRuntime) -> AppContext? {
     // Recovery may happen on every conversion, so look the core object up through a cached
     // prop name id to avoid re-interning the "expo" string into JSI on each call.
-    // TODO: drop the `copy` once `JavaScriptPropNameID.cached` borrows its runtime instead of
-    // taking it owned — it only reads the runtime, so the owned convention forces a needless retain.
-    let coreObjectPropName = JavaScriptPropNameID.cached(copy runtime, globalCoreObjectPropertyName)
+    let coreObjectPropName = JavaScriptPropNameID.cached(runtime, globalCoreObjectPropertyName)
     guard let coreObject = try? runtime.global().getPropertyAsObject(coreObjectPropName) else {
       return nil
     }
@@ -820,12 +823,12 @@ public class AppContext: NSObject, EXAppContextProtocol, @unchecked Sendable {
 
 /**
  Reference-type store for cached worklet prototypes. Needed because JavaScriptObject
- is ~Copyable and cannot be stored in a Dictionary; we cache via JavaScriptValue
- (a class) and rehydrate a JavaScriptObject on use.
+ is ~Copyable and cannot be stored in a Dictionary; we cache the prototype as a
+ `JavaScriptValue.Ref` and rehydrate a JavaScriptObject on use.
  */
 @JavaScriptActor
 private final class WorkletPrototypeCache {
-  var store: [ObjectIdentifier: JavaScriptValue] = [:]
+  var store: [ObjectIdentifier: JavaScriptObject.Ref] = [:]
 }
 
 // MARK: - Public exceptions
